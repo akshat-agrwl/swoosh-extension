@@ -259,14 +259,38 @@ header {
   color: #fff;
 }
 
-/* ---- Tab cleanup banner ---- */
-.tab-cleanup-banner {
-  background: linear-gradient(135deg, rgba(var(--accent-amber-rgb), 0.06), rgba(var(--accent-amber-rgb), 0.12));
-  border: 1px solid rgba(var(--accent-amber-rgb), 0.22);
-  border-left: 3px solid rgba(var(--accent-amber-rgb), 0.7);
+/* ---- Accent banner (shared base) ------------------------------------
+   Used by both the duplicate-tabs banner (.tab-cleanup-banner) and the
+   stale-tabs banner (.stale-banner). Variant-specific tweaks (layout
+   direction, spacing, animation) live with each modifier rule.
+
+   Fake border via padding + background-clip:
+     L1 (padding-box) translucent tint — the visible interior
+     L2 (padding-box) opaque page color — masks L3 behind the tint
+     L3 (border-box)  "border" color painted into the transparent border
+                      strip (thicker on the left, thin elsewhere)
+   This avoids subpixel-antialias dropout that makes low-opacity 1px rgba
+   borders disappear at 1x zoom in dark mode.
+   --------------------------------------------------------------------- */
+.tab-cleanup-banner,
+.stale-banner {
+  background:
+    linear-gradient(135deg,
+      rgba(var(--accent-amber-rgb), 0.06),
+      rgba(var(--accent-amber-rgb), 0.12)) padding-box,
+    linear-gradient(var(--paper), var(--paper)) padding-box,
+    linear-gradient(to right,
+      rgba(var(--accent-amber-rgb), 0.7) 0 3px,
+      rgba(var(--accent-amber-rgb), 0.22) 3px 100%) border-box;
+  border: 1.5px solid transparent;
+  border-left: 3px solid transparent;
   border-radius: 10px;
   padding: 18px 20px;
   display: flex;
+}
+
+/* Duplicate-tabs variant: single-row, icon/title on left, button on right. */
+.tab-cleanup-banner {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16px;
@@ -294,16 +318,6 @@ header {
   width: 18px;
   height: 18px;
   color: var(--accent-amber);
-}
-
-.tab-cleanup-text {
-  font-size: 13px;
-  color: var(--ink);
-  line-height: 1.5;
-}
-
-.tab-cleanup-text strong {
-  font-weight: 600;
 }
 
 .tab-cleanup-btn {
@@ -343,45 +357,6 @@ header {
 .tab-cleanup-btn-secondary:hover {
   background: rgba(var(--accent-amber-rgb), 0.08);
   opacity: 1;
-}
-
-/* ---- Nudge banner ---- */
-.nudge-banner {
-  background: linear-gradient(135deg, rgba(179, 90, 90, 0.04), rgba(179, 90, 90, 0.08));
-  border: 1px solid rgba(179, 90, 90, 0.15);
-  border-radius: 8px;
-  padding: 16px 24px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-bottom: 40px;
-}
-
-.nudge-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  background: rgba(179, 90, 90, 0.1);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.nudge-icon svg {
-  width: 18px;
-  height: 18px;
-  color: var(--status-abandoned);
-}
-
-.nudge-text {
-  font-size: 13px;
-  color: var(--ink);
-  line-height: 1.5;
-}
-
-.nudge-text strong {
-  font-weight: 600;
 }
 
 /* ---- Section Headers ---- */
@@ -497,10 +472,6 @@ header {
   pointer-events: none;
 }
 
-.mission-card.collapsed {
-  display: none !important;
-}
-
 /* Old side status bar — hidden, replaced by top border via ::before */
 .status-bar {
   display: none;
@@ -530,30 +501,6 @@ header {
   letter-spacing: -0.2px;
 }
 
-.mission-tag {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 3px;
-}
-
-.mission-tag.active {
-  color: var(--status-active);
-  background: rgba(61, 122, 74, 0.08);
-}
-
-.mission-tag.cooling {
-  color: var(--status-cooling);
-  background: rgba(184, 137, 46, 0.08);
-}
-
-.mission-tag.abandoned {
-  color: var(--status-abandoned);
-  background: rgba(179, 90, 90, 0.08);
-}
-
 /* Tab indicator badge — shows how many Chrome tabs are still open for this mission */
 .open-tabs-badge {
   display: inline-flex;
@@ -570,13 +517,6 @@ header {
 .open-tabs-badge svg {
   width: 10px;
   height: 10px;
-}
-
-.mission-summary {
-  font-size: 13px;
-  color: var(--muted);
-  line-height: 1.5;
-  margin-bottom: 8px;
 }
 
 .mission-pages {
@@ -712,14 +652,6 @@ header {
   font-size: 12px;
   color: var(--muted);
   padding: 6px 4px;
-}
-
-/* mission-meta hidden — see above */
-
-.mission-time {
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 4px;
 }
 
 .mission-page-count {
@@ -881,23 +813,6 @@ footer {
   margin-top: 4px;
 }
 
-.last-refresh {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.refresh-btn {
-  font-family: 'DM Sans', sans-serif;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--accent-amber);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
 /* ---- Animations ---- */
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(12px); }
@@ -906,16 +821,11 @@ footer {
 
 header { animation: fadeUp 0.5s ease both; }
 .tab-cleanup-banner { animation: fadeUp 0.5s ease 0.1s both; }
-.nudge-banner { animation: fadeUp 0.5s ease 0.15s both; }
 .active-section .section-header { animation: fadeUp 0.5s ease 0.2s both; }
 .active-section .missions .mission-card:nth-child(1) { animation: fadeUp 0.4s ease 0.25s both; }
 .active-section .missions .mission-card:nth-child(2) { animation: fadeUp 0.4s ease 0.3s both; }
 .active-section .missions .mission-card:nth-child(3) { animation: fadeUp 0.4s ease 0.35s both; }
 .active-section .missions .mission-card:nth-child(4) { animation: fadeUp 0.4s ease 0.4s both; }
-.abandoned-section .section-header { animation: fadeUp 0.5s ease 0.45s both; }
-.abandoned-section .missions .mission-card:nth-child(1) { animation: fadeUp 0.4s ease 0.5s both; }
-.abandoned-section .missions .mission-card:nth-child(2) { animation: fadeUp 0.4s ease 0.55s both; }
-.abandoned-section .missions .mission-card:nth-child(3) { animation: fadeUp 0.4s ease 0.6s both; }
 footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 .deferred-list .deferred-item:nth-child(1) { animation-delay: 0.05s; }
@@ -925,21 +835,6 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 .deferred-list .deferred-item:nth-child(5) { animation-delay: 0.25s; }
 .deferred-column .section-header { animation: fadeUp 0.5s ease 0.1s both; }
 
-
-/* ================================================================
-   STATIC DEFAULT VIEW — new elements added for "AI on demand"
-   ================================================================ */
-
-/* ---- Neutral status bar (domain-grouped cards, no AI color) ---- */
-.status-bar.neutral {
-  background: var(--warm-gray);
-}
-
-/* ---- "Domain" tag on static domain cards ---- */
-.mission-tag.neutral {
-  color: var(--muted);
-  background: rgba(154, 145, 138, 0.1);
-}
 
 /* ================================================================
    MISSIONS EMPTY STATE
@@ -1009,125 +904,6 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   color: var(--muted);
   font-weight: 400;
   letter-spacing: 0.3px;
-}
-
-
-/* ================================================================
-   UPDATE BANNER
-   Appears at the very top of the page when a new version is available.
-   Intentionally thin and unobtrusive — it's informational, not urgent.
-   The warm sage green palette feels calm and positive ("new thing!"),
-   contrasting with the amber/rose warning tones used elsewhere.
-   ================================================================ */
-
-.update-banner {
-  /* Thin bar — sits above the header, below the container's top padding */
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-
-  /* Sage green tint — matches accent-sage but very light */
-  background: linear-gradient(135deg, rgba(90, 122, 98, 0.05), rgba(90, 122, 98, 0.10));
-  border: 1px solid rgba(90, 122, 98, 0.22);
-  border-radius: 8px;
-  padding: 10px 16px;
-
-  /* Push the header down slightly */
-  margin-bottom: 24px;
-
-  /* Slide in from above when it appears */
-  animation: bannerSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-@keyframes bannerSlideIn {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* Left cluster: icon + text */
-.update-banner-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 0; /* prevents text overflow from breaking layout */
-}
-
-.update-banner-icon {
-  width: 16px;
-  height: 16px;
-  color: var(--accent-sage);
-  flex-shrink: 0;
-  opacity: 0.85;
-}
-
-.update-banner-text {
-  font-size: 13px;
-  color: var(--ink);
-  font-weight: 400;
-  line-height: 1.4;
-  opacity: 0.85;
-}
-
-/* Right cluster: action button + dismiss X */
-.update-banner-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-/* "Update now" button — small, filled, sage green */
-.update-banner-btn {
-  font-family: 'DM Sans', sans-serif;
-  font-size: 12px;
-  font-weight: 500;
-  color: #fff;
-  background: var(--accent-sage);
-  border: none;
-  border-radius: 5px;
-  padding: 5px 12px;
-  cursor: pointer;
-  letter-spacing: 0.2px;
-  transition: background 0.2s, opacity 0.2s;
-  white-space: nowrap;
-}
-
-.update-banner-btn:hover {
-  background: #4a6952; /* slightly darker sage */
-}
-
-.update-banner-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-/* Dismiss X button — minimal, icon-only */
-.update-banner-dismiss {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  border-radius: 4px;
-  color: var(--muted);
-  transition: background 0.15s, color 0.15s;
-  padding: 0;
-  flex-shrink: 0;
-}
-
-.update-banner-dismiss:hover {
-  background: rgba(26, 22, 19, 0.06);
-  color: var(--ink);
-}
-
-.update-banner-dismiss svg {
-  width: 14px;
-  height: 14px;
 }
 
 
@@ -1583,22 +1359,22 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 
 /* ── Stale tabs banner ──────────────────────────────────────────── */
 
+/* Stale-tabs variant: two-row (title row on top, chip list below).
+   Base banner styling (fake border, colors, padding) is shared with
+   .tab-cleanup-banner — see the "Accent banner (shared base)" block. */
 .stale-banner {
-  background: linear-gradient(135deg, rgba(var(--accent-amber-rgb), 0.06), rgba(var(--accent-amber-rgb), 0.12));
-  border: 1px solid rgba(var(--accent-amber-rgb), 0.22);
-  border-left: 3px solid rgba(var(--accent-amber-rgb), 0.7);
-  border-radius: 10px;
-  padding: 18px 20px;
-  margin-bottom: 16px;
+  flex-direction: column;
+  gap: 0;
+  margin-bottom: 30px;
   animation: fadeUp 0.4s ease 0.15s both;
 }
-
-/* ── Structural elements (shared across all variants) ───────────────── */
 
 .stale-banner-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 14px;
 }
 
 .stale-banner-identity {
@@ -1629,69 +1405,9 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   line-height: 1;
 }
 
+.stale-banner-actions { display: flex; flex-shrink: 0; gap: 8px; }
+.stale-banner-list    { padding-top: 14px; }
 
-/* ── V2: Two-row compact ────────────────────────────────────────────── */
-/* row 1: icon/title/count + buttons · row 2: chips */
-
-.stale-banner--v2 {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-.stale-banner--v2 .stale-banner-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 14px;
-}
-.stale-banner--v2 .stale-banner-subtitle,
-.stale-banner--v2 .stale-banner-divider { display: none !important; }
-.stale-banner--v2 .stale-banner-actions { display: flex; flex-shrink: 0; gap: 8px; }
-.stale-banner--v2 .stale-banner-list    { padding-top: 14px; }
-
-
-.stale-info-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: rgba(var(--accent-amber-rgb), 0.12);
-  color: var(--accent-amber);
-  font-size: 10px;
-  font-weight: 700;
-  cursor: default;
-  vertical-align: middle;
-  margin-left: 4px;
-  position: relative;
-}
-
-.stale-info-icon::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--card-bg);
-  color: var(--ink);
-  border: 1px solid var(--warm-gray);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 11px;
-  font-weight: 400;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s;
-  z-index: 10;
-  box-shadow: 0 2px 8px var(--shadow);
-}
-
-.stale-info-icon:hover::after {
-  opacity: 1;
-}
 
 .stale-banner .tab-cleanup-btn {
   flex-shrink: 0;
@@ -1713,7 +1429,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   border-radius: 14px;
   padding: 3px 4px 3px 8px;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--muted);
   cursor: pointer;
   transition: background 0.2s, opacity 0.3s, transform 0.3s;
   max-width: 100%;
@@ -1732,7 +1448,7 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
 .stale-tab-x {
   font-size: 14px;
   line-height: 1;
-  color: var(--text-muted);
+  color: var(--muted);
   opacity: 0.5;
   width: 18px;
   height: 18px;

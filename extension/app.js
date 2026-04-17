@@ -1322,6 +1322,12 @@ async function renderStaticDashboard() {
       openTabsMissionsEl.innerHTML = domainGroups
         .map((g, idx) => renderDomainCard(g, idx))
         .join('');
+
+      const activeCategories = new Set(domainGroups.map(g => getDomainCategory(g.domain)).filter(c => c !== 'default'));
+      document.querySelectorAll('.cat-pill').forEach(pill => {
+        const cat = pill.dataset.cat;
+        pill.style.display = activeCategories.has(cat) ? '' : 'none';
+      });
     } else {
       openTabsSectionCount.innerHTML = '';
       openTabsMissionsEl.innerHTML = '';
