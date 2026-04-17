@@ -723,27 +723,57 @@ const DOMAIN_CATEGORIES = {
   work: [
     'docs.google.com', 'drive.google.com', 'sheets.google.com', 'slides.google.com',
     'notion.so', 'slack.com', 'teams.microsoft.com', 'office.com',
-    'sharepoint.com', 'rilcloud-my.sharepoint.com',
-    'outlook.office.com', 'outlook.live.com',
+    'sharepoint.com', 'outlook.office.com', 'outlook.live.com',
+    'calendar.google.com', 'mail.google.com', 'meet.google.com',
+    'zoom.us', 'webex.com', 'whereby.com',
+    'trello.com', 'asana.com', 'monday.com', 'linear.app', 'clickup.com',
+    'airtable.com', 'figma.com', 'miro.com', 'loom.com',
+    'dropbox.com', 'box.com', '1password.com', 'lastpass.com',
   ],
-  work_partial: ['jira', 'confluence', 'azure', 'atlassian'],
+  work_partial: ['jira', 'confluence', 'azure', 'atlassian', 'sharepoint', 'zendesk', 'hubspot', 'salesforce'],
   social: [
     'twitter.com', 'x.com', 'linkedin.com', 'facebook.com',
     'reddit.com', 'instagram.com', 'threads.net',
+    'tiktok.com', 'snapchat.com', 'pinterest.com', 'tumblr.com',
+    'discord.com', 'telegram.org', 'whatsapp.com', 'messenger.com',
+    'mastodon.social', 'bsky.app',
   ],
   dev: [
-    'github.com', 'gitlab.com', 'stackoverflow.com', 'npmjs.com',
-    'localhost', 'codepen.io', 'codesandbox.io',
+    'github.com', 'gitlab.com', 'bitbucket.org', 'stackoverflow.com',
+    'npmjs.com', 'pypi.org', 'crates.io', 'pkg.go.dev',
+    'localhost', 'codepen.io', 'codesandbox.io', 'stackblitz.com', 'replit.com',
+    'vercel.com', 'netlify.com', 'render.com', 'railway.app', 'fly.io',
+    'developer.mozilla.org', 'devdocs.io', 'css-tricks.com',
+    'aws.amazon.com', 'console.cloud.google.com', 'portal.azure.com',
+    'postman.com', 'insomnia.rest',
   ],
   media: [
     'youtube.com', 'netflix.com', 'spotify.com', 'twitch.tv',
     'music.youtube.com', 'podcasts.apple.com',
+    'hulu.com', 'disneyplus.com', 'primevideo.com', 'max.com', 'peacocktv.com',
+    'soundcloud.com', 'deezer.com', 'tidal.com',
+    'vimeo.com', 'dailymotion.com',
+    'news.ycombinator.com', 'medium.com', 'substack.com', 'dev.to',
   ],
+  ai: [
+    'chatgpt.com', 'chat.openai.com', 'openai.com',
+    'claude.ai', 'anthropic.com',
+    'gemini.google.com', 'bard.google.com', 'aistudio.google.com',
+    'perplexity.ai',
+    'copilot.microsoft.com', 'bing.com',
+    'mistral.ai', 'chat.mistral.ai',
+    'huggingface.co', 'replicate.com',
+    'poe.com', 'you.com', 'phind.com',
+    'grok.com', 'x.ai',
+    'character.ai', 'pi.ai',
+  ],
+  jio: ['10.135.1.105'],
+  jio_partial: ['jio.com'],
 };
 
 function getDomainCategory(domain) {
   if (!domain || domain.startsWith('__')) return 'default';
-  const d = domain.toLowerCase();
+  const d = domain.toLowerCase().replace(/^www\./, '');
   for (const [cat, hosts] of Object.entries(DOMAIN_CATEGORIES)) {
     if (cat.endsWith('_partial')) {
       const baseCat = cat.replace('_partial', '');
