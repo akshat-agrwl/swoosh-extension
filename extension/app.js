@@ -131,8 +131,19 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
+      lastTabSnapshot = '';
       renderDashboard();
     }, 300);
+  }
+});
+
+// Re-render when the user switches back to this tab — covers the case where
+// a deferred link was opened in a new tab and the message was missed while
+// this page was backgrounded.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    lastTabSnapshot = '';
+    renderDashboard();
   }
 });
 
@@ -917,14 +928,14 @@ function buildOverflowChips(hiddenTabs, urlCounts = {}) {
     const safeTitle = label.replace(/"/g, '&quot;');
     const faviconUrl = tab.favIconUrl || (tab.url ? `https://www.google.com/s2/favicons?domain=${new URL(tab.url).hostname}&sz=32` : '');
     const pinTag = tab.pinned ? `<span class="chip-pin-icon">${ICONS.pin}</span>` : '';
-    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
+    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" data-tooltip="${safeTitle}">
       ${pinTag}${faviconUrl ? `<img class="chip-favicon favicon-img" src="${faviconUrl}" alt="">` : ''}
       <span class="chip-text">${escHtml(label)}</span>${dupeTag}
       <div class="chip-actions">
-        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
+        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tooltip="Save for later">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
         </button>
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
+        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" data-tooltip="Close tab">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
         </button>
       </div>
@@ -997,14 +1008,14 @@ function renderDomainCard(group) {
     const safeTitle = label.replace(/"/g, '&quot;');
     const faviconUrl = tab.favIconUrl || (tab.url ? `https://www.google.com/s2/favicons?domain=${new URL(tab.url).hostname}&sz=32` : '');
     const pinTag = tab.pinned ? `<span class="chip-pin-icon">${ICONS.pin}</span>` : '';
-    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" title="${safeTitle}">
+    return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" data-tooltip="${safeTitle}">
       ${pinTag}${faviconUrl ? `<img class="chip-favicon favicon-img" src="${faviconUrl}" alt="">` : ''}
       <span class="chip-text">${escHtml(label)}</span>${dupeTag}
       <div class="chip-actions">
-        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" title="Save for later">
+        <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tooltip="Save for later">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17.593 3.322c1.1.128 1.907 1.077 1.907 2.185V21L12 17.25 4.5 21V5.507c0-1.108.806-2.057 1.907-2.185a48.507 48.507 0 0 1 11.186 0Z" /></svg>
         </button>
-        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" title="Close this tab">
+        <button class="chip-action chip-close" data-action="close-single-tab" data-tab-url="${safeUrl}" data-tooltip="Close tab">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
         </button>
       </div>
@@ -1015,7 +1026,7 @@ function renderDomainCard(group) {
   if (hasDupes) {
     const dupeUrlsEncoded = dupeUrls.map(([url]) => encodeURIComponent(url)).join(',');
     dupeIcon = `
-      <button class="card-dupe-icon" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}" title="Close ${totalExtras} duplicate${totalExtras !== 1 ? 's' : ''}">
+      <button class="card-dupe-icon" data-action="dedup-keep-one" data-dupe-urls="${dupeUrlsEncoded}" data-tooltip="Close ${totalExtras} duplicate${totalExtras !== 1 ? 's' : ''}">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V7.875c0-.621.504-1.125 1.125-1.125H6.75a9.06 9.06 0 0 1 1.5.124m7.5 10.376h3.375c.621 0 1.125-.504 1.125-1.125V11.25c0-4.46-3.243-8.161-7.5-8.876a9.06 9.06 0 0 0-1.5-.124H9.375c-.621 0-1.125.504-1.125 1.125v3.5m7.5 10.375H9.375a1.125 1.125 0 0 1-1.125-1.125v-9.25m12 6.625v-1.875a3.375 3.375 0 0 0-3.375-3.375h-1.5a1.125 1.125 0 0 1-1.125-1.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H9.75" /></svg>
       </button>`;
   }
@@ -1036,10 +1047,10 @@ function renderDomainCard(group) {
           ${tabBadge}
           <div class="card-top-actions">
             ${dupeIcon}
-            <button class="card-close-btn" data-action="close-domain-tabs" data-domain-id="${stableId}" title="Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}">
+            <button class="card-close-btn" data-action="close-domain-tabs" data-domain-id="${stableId}" data-tooltip="Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
             </button>
-            <button class="card-expand-btn" title="Show tabs">
+            <button class="card-expand-btn" data-tooltip="Show tabs">
               <svg class="expand-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
             </button>
           </div>
@@ -1166,7 +1177,7 @@ function renderDeferredItem(item) {
     <div class="deferred-item" data-deferred-id="${item.id}">
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
-        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
+        <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" data-tooltip="${(item.title || '').replace(/"/g, '&quot;')}">
           ${faviconUrl ? `<img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" class="favicon-img">` : ''}${escHtml(item.title || item.url)}
         </a>
         <div class="deferred-meta">
@@ -1174,7 +1185,7 @@ function renderDeferredItem(item) {
           <span>${ago}</span>
         </div>
       </div>
-      <button class="deferred-dismiss" data-action="dismiss-deferred" data-deferred-id="${item.id}" title="Dismiss">
+      <button class="deferred-dismiss" data-action="dismiss-deferred" data-deferred-id="${item.id}" data-tooltip="Dismiss">
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
       </button>
     </div>`;
@@ -1193,7 +1204,7 @@ function renderArchiveItem(item) {
 
   return `
     <div class="archive-item">
-      <a href="${item.url}" target="_blank" rel="noopener" class="archive-item-title" title="${(item.title || '').replace(/"/g, '&quot;')}">
+      <a href="${item.url}" target="_blank" rel="noopener" class="archive-item-title" data-tooltip="${(item.title || '').replace(/"/g, '&quot;')}">
         ${escHtml(item.title || item.url)}
       </a>
       <span class="archive-item-date">${ago}</span>
@@ -1227,7 +1238,7 @@ async function renderStaticDashboard() {
   await fetchOpenTabs();
   const realTabs = getRealTabs();
 
-  const snapshot = JSON.stringify(realTabs.map(t => t.url + '\t' + t.title).sort());
+  const snapshot = JSON.stringify(openTabs.map(t => t.id + '\t' + t.url + '\t' + t.title).sort());
   if (snapshot === lastTabSnapshot) {
     const statTabs = document.getElementById('statTabs');
     if (statTabs) statTabs.textContent = openTabs.length;
@@ -1380,7 +1391,7 @@ async function renderStaticDashboard() {
         const favicon = faviconUrl
           ? `<img src="${faviconUrl}" width="14" height="14" style="border-radius:2px;" class="favicon-img">`
           : '';
-        return `<span class="stale-tab-chip" data-action="focus-tab" data-tab-url="${t.url}"><span class="stale-tab-keep" data-action="keep-stale-tab" data-stale-url="${encoded}" title="Keep open">↗</span>${favicon}<span class="stale-tab-title">${escHtml(t.title || 'Untitled')}</span><span class="stale-tab-x" data-action="close-stale-tab" data-stale-url="${encoded}">&times;</span></span>`;
+        return `<span class="stale-tab-chip" data-action="focus-tab" data-tab-url="${t.url}"><span class="stale-tab-keep" data-action="keep-stale-tab" data-stale-url="${encoded}" data-tooltip="Keep open">↗</span>${favicon}<span class="stale-tab-title">${escHtml(t.title || 'Untitled')}</span><span class="stale-tab-x" data-action="close-stale-tab" data-stale-url="${encoded}" data-tooltip="Close tab">&times;</span></span>`;
       }).join('');
       staleBanner.style.display = 'block';
     } else {
@@ -1491,7 +1502,7 @@ async function renderStatsSection() {
           ${last7.map(d => {
             const pct = Math.max(2, Math.round((d.time / trendMax) * 100));
             return `<div class="trend-col${d.isToday ? ' trend-today' : ''}">
-              <div class="trend-bar" style="height:${pct}%" title="${formatDuration(d.time)}"></div>
+              <div class="trend-bar" style="height:${pct}%" data-tooltip="${formatDuration(d.time)}" data-tooltip-pos="up"></div>
               <div class="trend-label">${d.label}</div>
             </div>`;
           }).join('')}
@@ -1544,6 +1555,19 @@ async function renderDashboard() {
    ---------------------------------------------------------------- */
 
 document.addEventListener('click', async (e) => {
+  // Clicking a saved-for-later link: auto-dismiss it since it's now open
+  const deferredLink = e.target.closest('.deferred-title');
+  if (deferredLink) {
+    const item = deferredLink.closest('.deferred-item');
+    const id = item?.dataset.deferredId;
+    if (id) {
+      await updateDeferred(id, { dismissed: true });
+      item.classList.add('removing');
+      setTimeout(() => { item.remove(); renderDeferredColumn(); }, 300);
+    }
+    return; // let the link navigate normally
+  }
+
   // Walk up the DOM from the clicked element to find the nearest
   // element with a data-action attribute
   const actionEl = e.target.closest('[data-action]');
@@ -2359,6 +2383,17 @@ document.getElementById('openTabsMissions')?.addEventListener('click', (e) => {
 });
 
 // ── Stale threshold settings ──────────────────────────────────────────────────
+function updateStaleTooltip() {
+  const identity = document.getElementById('staleBannerIdentity');
+  if (!identity) return;
+  const h = staleThresholdHours;
+  let label;
+  if (h < 24) label = `${h} hour${h !== 1 ? 's' : ''}`;
+  else if (h < 168) { const d = h / 24; label = `${d} day${d !== 1 ? 's' : ''}`; }
+  else { const w = h / 168; label = `${w} week${w !== 1 ? 's' : ''}`; }
+  identity.dataset.tooltip = `Tabs idle for ${label} or more`;
+}
+
 (async () => {
   const stored = await chrome.storage.local.get('staleThresholdHours');
   if (stored.staleThresholdHours) {
@@ -2369,6 +2404,7 @@ document.getElementById('openTabsMissions')?.addEventListener('click', (e) => {
   document.querySelectorAll('.settings-opt').forEach(btn => {
     btn.classList.toggle('is-active', Number(btn.dataset.hours) === staleThresholdHours);
   });
+  updateStaleTooltip();
 })();
 
 const settingsToggle = document.getElementById('settingsToggle');
@@ -2407,11 +2443,68 @@ document.getElementById('staleOptions')?.addEventListener('click', async (e) => 
   document.querySelectorAll('.settings-opt').forEach(b => {
     b.classList.toggle('is-active', Number(b.dataset.hours) === hours);
   });
+  updateStaleTooltip();
   settingsPopover.classList.remove('is-open');
   settingsToggle?.setAttribute('aria-expanded', 'false');
   lastTabSnapshot = ''; // force full re-render so stale threshold is re-evaluated
   renderDashboard();
 });
+
+// ── Global tooltip engine ────────────────────────────────────────────────────
+// Appended to body so it's never clipped by overflow:hidden on cards or banners.
+(function initTooltip() {
+  const tip = document.createElement('div');
+  tip.id = 'swoosh-tooltip';
+  document.body.appendChild(tip);
+
+  let showTimer = null;
+
+  function show(text, anchorEl) {
+    tip.textContent = text;
+    tip.classList.remove('is-visible');
+    // Measure at opacity:0 so layout is correct before animating in
+    tip.style.left = '-9999px';
+    tip.style.top = '-9999px';
+    // Force layout to get real dimensions
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    const r = anchorEl.getBoundingClientRect();
+    const forceUp = anchorEl.dataset.tooltipPos === 'up';
+    let left = r.left + r.width / 2 - tw / 2;
+    let top = forceUp ? r.top - th - 6 : r.bottom + 6;
+    // Clamp to viewport
+    left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+    if (!forceUp && top + th > window.innerHeight - 8) top = r.top - th - 6;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+    tip.classList.add('is-visible');
+  }
+
+  function hide() {
+    clearTimeout(showTimer);
+    tip.classList.remove('is-visible');
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest('[data-tooltip]');
+    if (!el) return;
+    const text = el.dataset.tooltip;
+    if (!text) return;
+    clearTimeout(showTimer);
+    showTimer = setTimeout(() => show(text, el), 600);
+  });
+
+  document.addEventListener('mouseout', (e) => {
+    const el = e.target.closest('[data-tooltip]');
+    if (!el) return;
+    // Only hide if moving outside the element entirely
+    if (!el.contains(e.relatedTarget)) hide();
+  });
+
+  // Hide on scroll/click so stale tooltips don't linger
+  document.addEventListener('scroll', hide, { capture: true, passive: true });
+  document.addEventListener('mousedown', hide);
+})();
 
 startClock();
 renderDashboard();

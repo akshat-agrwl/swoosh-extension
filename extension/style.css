@@ -1835,6 +1835,35 @@ footer { animation: fadeUp 0.5s ease 0.65s both; }
   align-items: center;
   gap: 12px;
   min-width: 0;
+  position: relative;
+}
+
+/* ── Generic tooltip (global, appended to body to escape overflow:hidden) ───── */
+#swoosh-tooltip {
+  position: fixed;
+  z-index: 99999;
+  background: #1a1714;
+  color: rgba(255,255,255,0.85);
+  font-size: 12px;
+  font-weight: 400;
+  padding: 5px 10px;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  max-width: 320px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+#swoosh-tooltip.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #swoosh-tooltip { transition: none; }
 }
 
 .stale-banner-title {
