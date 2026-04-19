@@ -1,10 +1,8 @@
 <h1 align="left"><img src="extension/icons/icon.svg" width="32" valign="middle" /> Swoosh</h1>
 
-**Keep tabs on your tabs.**
+**Your tabs, organized.**
 
-Swoosh replaces your Chrome new tab page with a dashboard that shows everything you have open -- grouped by domain, with landing pages (Gmail, X, LinkedIn, etc.) pulled into their own group for easy cleanup. Close tabs with a satisfying swoosh + confetti.
-
-Built for people who open too many tabs and never close them.
+Swoosh replaces your Chrome new tab page with a tab dashboard that groups open tabs by site, surfaces stale ones, and helps you clear the clutter — with a satisfying swoosh.
 
 ---
 
@@ -31,13 +29,15 @@ Open a new tab — you'll see Swoosh.
 
 ## Features
 
-- **All tabs, one view** -- grouped by domain on a clean grid
-- **Universal search** -- `/` or `Cmd+K` to find tabs and search Google
-- **Landing pages** -- Gmail, YouTube, LinkedIn grouped together
-- **Duplicate cleanup** -- one-click to close extra copies
-- **Stale tabs** -- tabs idle 4+ hours surfaced for cleanup
-- **Save for later** -- bookmark tabs to a checklist before closing
-- **Light + dark mode** -- with cool and warm color palettes
+- **Tab grouping** — Open tabs grouped by domain on a clean grid
+- **Universal search** — Press `/` or `Cmd+K` to search tabs and Google
+- **Landing pages** — Gmail, YouTube, X, LinkedIn grouped together
+- **Duplicate cleanup** — One-click to close duplicate tabs
+- **Stale tabs** — Tabs you haven't touched in a while, configurable from 1 hour to 2 weeks
+- **Save for later** — Bookmark tabs to a checklist, reopen when ready
+- **Archive** — Search through saved tabs
+- **Focus time** — See how many tabs you have open and track your focus
+- **Themes** — Light/dark mode with warm and cool color palettes
 
 ---
 
