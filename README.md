@@ -1,4 +1,4 @@
-<h1 align="left"><img src="extension/icons/icon.svg" width="32" valign="middle" /> Swoosh</h1>
+<h1 align="left"><img src="extension/favicon/favicon.svg" width="32" valign="middle" /> Swoosh</h1>
 
 **Your tabs, organized.**
 
