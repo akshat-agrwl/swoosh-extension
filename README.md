@@ -18,6 +18,19 @@ Swoosh replaces your Chrome new tab page with a tab dashboard that groups open t
 
 ---
 
+## Install
+
+1. Download [`extension.zip`](extension.zip) from this repo
+2. Unzip it somewhere permanent (e.g. `~/swoosh-extension/`)
+3. Go to `chrome://extensions` in Chrome
+4. Enable **Developer mode** (top-right toggle)
+5. Click **Load unpacked** and select the unzipped folder
+6. Open a new tab — you're done
+
+To update later: download the new `extension.zip`, replace the files in your folder, then click the reload icon on the extension card in `chrome://extensions`.
+
+---
+
 ## Tech stack
 
 | What | How |
