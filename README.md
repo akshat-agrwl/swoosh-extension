@@ -16,6 +16,10 @@ Swoosh replaces your Chrome new tab page with a tab dashboard that groups open t
 - **Focus time** — See how many tabs you have open and track your focus
 - **Themes** — Light/dark mode with warm and cool color palettes
 
+## Install
+
+Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/chidbgfpkgnkcjgcfmngkodgdhjgokpj?utm_source=item-share-cb).
+
 ---
 
 ## Tech stack
