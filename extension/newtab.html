@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Swoosh</title>
+  <title>New Tab</title>
   <link rel="icon" type="image/png" href="favicon/favicon-96x96.png" sizes="96x96" />
   <link rel="icon" type="image/svg+xml" href="favicon/favicon.svg" />
   <link rel="shortcut icon" href="favicon/favicon.ico" />
@@ -53,6 +53,19 @@
             <button class="settings-opt" data-hours="168">1 week</button>
             <button class="settings-opt" data-hours="336">2 weeks</button>
           </div>
+          <div class="settings-divider"></div>
+          <div class="settings-label">Tab grouping</div>
+          <div class="settings-options" id="groupingOptions">
+            <button class="settings-opt" data-grouping="domain">Domain</button>
+            <button class="settings-opt" data-grouping="smart">Smart (AI)</button>
+          </div>
+          <div class="settings-divider"></div>
+          <div class="settings-label">Groq API key (AI features)</div>
+          <div class="settings-api-row">
+            <input type="password" class="settings-api-input" id="groqApiKeyInput" placeholder="gsk_..." autocomplete="off" spellcheck="false">
+            <button class="settings-api-save" id="groqApiKeySave">Save</button>
+          </div>
+          <div class="settings-api-status" id="groqApiKeyStatus"></div>
         </div>
       </div>
       <button class="theme-toggle" id="paletteToggle" data-tooltip="Toggle palette">
@@ -92,6 +105,7 @@
         </div>
         <div class="stale-banner-list" id="staleBannerList"></div>
       </div>
+      <div class="pinned-strip" id="pinnedStrip" style="display:none" role="region" aria-label="Pinned tabs"></div>
       <div class="missions" id="openTabsMissions"></div>
     </div>
 
@@ -118,10 +132,17 @@
   </div><!-- end .dashboard-columns -->
 
   <!-- ================================================================
-       STATS SECTION
+       DIGEST SECTION
        ================================================================ -->
-  <div class="stats-section" id="statsSection" style="display:none">
-    <div class="stats-grid" id="statsGrid"></div>
+  <div class="digest-section" id="digestSection">
+    <div class="digest-header">
+      <h2 class="digest-title">Today's Digest</h2>
+      <div class="digest-meta">
+        <span class="digest-updated" id="digestUpdated">Loading…</span>
+        <button class="digest-refresh-btn" id="digestRefresh" aria-label="Refresh digest" data-tooltip="Refresh digest">↻</button>
+      </div>
+    </div>
+    <div class="digest-list" id="digestList"></div>
   </div>
 
   <!-- ================================================================
@@ -132,10 +153,6 @@
       <div class="stat">
         <div class="stat-num" id="statTabs">—</div>
         <div class="stat-label">Open tabs</div>
-      </div>
-      <div class="stat">
-        <div class="stat-num" id="statActiveTime">—</div>
-        <div class="stat-label">Focus time today</div>
       </div>
     </div>
   </footer>

@@ -15,6 +15,23 @@ function escHtml(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function faviconUrl(pageUrl, size = 32) {
+  try {
+    const u = new URL(chrome.runtime.getURL('/_favicon/'));
+    u.searchParams.set('pageUrl', pageUrl);
+    u.searchParams.set('size', String(size));
+    return u.toString();
+  } catch { return ''; }
+}
+
+// Distribute HTML cards into fixed columns (round-robin) so expanding
+// a card only affects its own column, not the entire layout.
+function distributeToColumns(cards, count) {
+  const cols = Array.from({ length: count }, () => []);
+  cards.forEach((html, i) => cols[i % count].push(html));
+  return cols.map(c => `<div class="masonry-col">${c.join('')}</div>`).join('');
+}
+
 // Hide broken favicon images without inline event handlers (CSP-safe)
 document.addEventListener('error', (e) => {
   if (!e.target?.classList?.contains('favicon-img')) return;
@@ -756,6 +773,407 @@ function smartTitle(title, url) {
 }
 
 
+/* ----------------------------------------------------------------
+   AI TITLE REWRITER — Groq-backed cleanup for tab + article titles.
+   Results are cached by URL in chrome.storage.local; uncached items
+   are batched and sent to Groq, then the dashboard re-renders.
+   ---------------------------------------------------------------- */
+
+const AI_CACHE_KEY     = 'ai_titles';
+const AI_KEY_STORAGE   = 'groq_api_key';
+const AI_MODEL         = 'openai/gpt-oss-20b';
+const AI_BATCH_SIZE    = 15;
+const AI_MAX_INPUT_LEN = 200;
+
+let aiTitleCache = {};
+let aiApiKey     = '';
+let aiInflight   = new Set(); // URLs currently being rewritten
+let aiPending    = false;     // re-render coalescer
+
+async function loadAiState() {
+  const data = await chrome.storage.local.get([AI_CACHE_KEY, AI_KEY_STORAGE]);
+  aiTitleCache = data[AI_CACHE_KEY] || {};
+  aiApiKey     = data[AI_KEY_STORAGE] || '';
+}
+
+function aiTitleFor(url, fallback) {
+  return (url && aiTitleCache[url]) || fallback;
+}
+
+function aiSystemPrompt() {
+  return 'You rewrite browser tab and RSS article titles to be cleaner and shorter. Rules: strip site names ("— YouTube", "| GitHub"), notification counts ("(3)"), emoji prefixes, and marketing fluff. Keep the meaningful content. Max 60 chars. Preserve language. Respond with a JSON object: {"items":[{"id":number,"title":string}]} matching the input ids exactly. No prose.';
+}
+
+async function aiCallGroq(batch) {
+  // batch: [{ id, title }]
+  if (!aiApiKey) return {};
+  const userMsg = `Rewrite these titles. Return JSON {"items":[{"id":..,"title":..}]} only.\n\n${JSON.stringify(batch)}`;
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${aiApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: AI_MODEL,
+      messages: [
+        { role: 'system', content: aiSystemPrompt() },
+        { role: 'user', content: userMsg },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_tokens: 800,
+    }),
+  });
+  if (!res.ok) throw new Error(`Groq ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) return {};
+  let parsed;
+  try { parsed = JSON.parse(content); } catch { return {}; }
+  const arr = Array.isArray(parsed) ? parsed : (parsed.items || parsed.titles || parsed.results || []);
+  const byId = {};
+  for (const item of arr) {
+    if (typeof item?.id === 'number' && typeof item?.title === 'string') {
+      byId[item.id] = item.title.trim();
+    }
+  }
+  return byId;
+}
+
+async function enqueueAiRewrites(items) {
+  // items: [{ url, title }]
+  if (!aiApiKey || !items?.length) return;
+
+  const todo = [];
+  for (const it of items) {
+    if (!it?.url || !it?.title) continue;
+    if (aiTitleCache[it.url]) continue;
+    if (aiInflight.has(it.url)) continue;
+    const clean = it.title.slice(0, AI_MAX_INPUT_LEN);
+    todo.push({ url: it.url, title: clean });
+    aiInflight.add(it.url);
+  }
+  if (todo.length === 0) return;
+
+  let anyUpdated = false;
+  for (let i = 0; i < todo.length; i += AI_BATCH_SIZE) {
+    const chunk = todo.slice(i, i + AI_BATCH_SIZE);
+    const batch = chunk.map((it, idx) => ({ id: idx, title: it.title }));
+    try {
+      const result = await aiCallGroq(batch);
+      for (let j = 0; j < chunk.length; j++) {
+        const rewritten = result[j];
+        const url = chunk[j].url;
+        aiInflight.delete(url);
+        if (rewritten && rewritten.length > 1 && rewritten.length <= 80) {
+          aiTitleCache[url] = rewritten;
+          anyUpdated = true;
+        }
+      }
+    } catch (err) {
+      console.warn('[swoosh] AI rewrite failed:', err.message);
+      for (const it of chunk) aiInflight.delete(it.url);
+      break;
+    }
+  }
+
+  if (anyUpdated) {
+    await chrome.storage.local.set({ [AI_CACHE_KEY]: aiTitleCache });
+    if (!aiPending) {
+      aiPending = true;
+      setTimeout(() => { aiPending = false; renderDashboard(); }, 50);
+    }
+  }
+}
+
+async function aiClearCache() {
+  aiTitleCache = {};
+  await chrome.storage.local.remove(AI_CACHE_KEY);
+}
+
+
+/* ----------------------------------------------------------------
+   SMART TAB GROUPING — Groq clusters tabs by intent/topic across
+   domains. Result is cached by tab-set signature (sorted URL hash).
+   ---------------------------------------------------------------- */
+
+const SMART_GROUP_CACHE_KEY = 'smart_groups_cache';
+const GROUPING_MODE_KEY     = 'grouping_mode';
+const SMART_MIN_TABS        = 5;
+const SMART_MAX_TABS        = 50;
+const SMART_GROUP_MODEL     = 'llama-3.3-70b-versatile';
+// Bump this whenever the prompt or post-processing changes — invalidates cached groupings.
+const SMART_PROMPT_VERSION  = 'v4';
+
+let groupingMode     = 'domain';   // 'domain' | 'smart'
+let smartGroupCache  = {};         // signature -> { groups: [{name, urls}] }
+let smartInflight    = null;       // current signature being fetched
+
+async function loadGroupingState() {
+  const data = await chrome.storage.local.get([GROUPING_MODE_KEY, SMART_GROUP_CACHE_KEY]);
+  groupingMode    = data[GROUPING_MODE_KEY] === 'smart' ? 'smart' : 'domain';
+  smartGroupCache = data[SMART_GROUP_CACHE_KEY] || {};
+}
+
+function tabSetSignature(tabs) {
+  // Deterministic hash of sorted URLs — same set of tabs → same signature.
+  const urls = tabs.map(t => t.url || '').sort();
+  let h = 0;
+  for (const u of urls) {
+    for (let i = 0; i < u.length; i++) {
+      h = ((h << 5) - h + u.charCodeAt(i)) | 0;
+    }
+    h = (h * 31) | 0;
+  }
+  return SMART_PROMPT_VERSION + ':' + urls.length + ':' + h.toString(36);
+}
+
+function smartGroupSystemPrompt() {
+  return [
+    'You are an expert at clustering browser tabs by the user\'s underlying activity, project, or topic — NOT by domain.',
+    '',
+    'PROCESS:',
+    '1. Read every tab title carefully. Infer what the user is doing, learning, building, or researching.',
+    '2. Find clusters of 2+ tabs that share an intent — even when domains differ. A GitHub repo about LLMs + a YouTube tutorial about LLMs + a Claude docs page = one cluster ("LLM development"). A YouTube vlog about Tokyo + a Google Maps tab of Shibuya + a Booking.com hotel = one cluster ("Tokyo trip").',
+    '3. Be generous with cluster count. It is BETTER to create 10 specific clusters than 6 clusters with a giant grab-bag at the end. Even a cluster of just 2 related tabs is valuable.',
+    '',
+    'NAMING:',
+    '- 2-5 words, descriptive of the activity. Examples: "Claude & AI tooling", "YouTube watch later", "React state debugging", "Job search outreach".',
+    '- ABSOLUTELY FORBIDDEN names: "Other", "Misc", "Various", "General", "Unrelated", "Miscellaneous", "Random", "Mixed", "Reading queue", "Reading list", "Browser tabs", "Saved for later". These signal lazy clustering. If tabs feel unrelated, look for a TOPICAL thread — "AI tooling articles", "JS framework reading", "Cooking recipes", "Hiring resources" — name the SUBJECT, not the activity of reading.',
+    '- If you create 2 GitHub repos cluster: name it by what they share ("AI agent repos", "Open-source tools") — never "GitHub stuff".',
+    '',
+    'COVERAGE (CRITICAL):',
+    '- Every single tab id from the input must appear in exactly one group in your output. No duplicates, no omissions.',
+    '- Before finalizing, mentally count: input had N tabs; your output must reference all N ids. Missing ids is the #1 failure mode — do not skip any.',
+    '- If a tab truly fits nowhere, create a small 1-2 tab group named after its actual content ("Redis intro video", "Personal philosophy"). NEVER silently drop it.',
+    '- Create 5-12 groups. Err on the side of MORE specific groups, not fewer. A 2-tab cluster with a real theme beats lumping those 2 into "Other".',
+    '- HARD LIMIT: no single group may contain more than 40% of the tabs. If you find yourself wanting to, that group is too broad — split it by topic.',
+    '- ANTI-PATTERN to avoid: after making 5-6 good clusters, dumping the remaining 8-10 tabs into one giant "Other", "Miscellaneous", or "Reading queue". If you see yourself doing this, STOP and break the dump into 2-4 smaller, more specific clusters instead.',
+    '',
+    'OUTPUT FORMAT (strict JSON, no prose):',
+    '{"groups":[{"name":"...","ids":[0,3,5]},{"name":"...","ids":[1,2,4]}]}',
+  ].join('\n');
+}
+
+async function smartGroupCallGroq(tabsForLLM, { allowRetry = true } = {}) {
+  if (!aiApiKey) throw new Error('no api key');
+  const payload = tabsForLLM.map(t => ({ id: t.id, host: t.host, title: t.title }));
+  const userMsg = `Group these ${payload.length} tabs:\n${JSON.stringify(payload)}`;
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${aiApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: SMART_GROUP_MODEL,
+      messages: [
+        { role: 'system', content: smartGroupSystemPrompt() },
+        { role: 'user',   content: userMsg },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      max_tokens: 2000,
+    }),
+  });
+
+  if (res.status === 429 && allowRetry) {
+    const body = await res.text();
+    // Groq encodes the wait as "try again in 19.405s" in the message; the
+    // retry-after header is also set on most responses.
+    const headerWait = parseFloat(res.headers.get('retry-after') || '');
+    const bodyMatch  = body.match(/try again in\s+([\d.]+)\s*s/i);
+    const waitSec    = Number.isFinite(headerWait) && headerWait > 0
+      ? headerWait
+      : (bodyMatch ? parseFloat(bodyMatch[1]) : 20);
+    const waitMs     = Math.min(Math.ceil(waitSec * 1000) + 500, 30000);
+    console.warn(`[swoosh] Groq 429 — waiting ${waitMs}ms then retrying`);
+    await new Promise(r => setTimeout(r, waitMs));
+    return smartGroupCallGroq(tabsForLLM, { allowRetry: false });
+  }
+
+  if (!res.ok) throw new Error(`Groq ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('empty response');
+  console.log('[swoosh] smart grouping raw response:', content);
+  return JSON.parse(content);
+}
+
+function validateAndMapGroups(rawResult, tabs) {
+  // rawResult: { groups: [{name, ids}] }
+  // tabs: original array with { id, url, ... }
+  const idToTab = new Map(tabs.map(t => [t.id, t]));
+  const claimed = new Set();
+  const out = [];
+
+  const groups = Array.isArray(rawResult?.groups) ? rawResult.groups : [];
+  for (const g of groups) {
+    if (!g || typeof g.name !== 'string' || !Array.isArray(g.ids)) continue;
+    const groupTabs = [];
+    for (const id of g.ids) {
+      if (claimed.has(id)) continue;
+      const tab = idToTab.get(id);
+      if (!tab) continue;
+      claimed.add(id);
+      groupTabs.push(tab);
+    }
+    if (groupTabs.length === 0) continue;
+    out.push({ name: g.name.trim().slice(0, 60), tabs: groupTabs });
+  }
+  return out;
+}
+
+async function smartGroupTabs(tabs) {
+  // tabs: array of chrome.tabs with { id, url, title, favIconUrl, ... }
+  if (!aiApiKey || groupingMode !== 'smart') return null;
+  if (tabs.length < SMART_MIN_TABS) return null;
+
+  const signature = tabSetSignature(tabs);
+  const cached = smartGroupCache[signature];
+  if (cached) {
+    return rebuildGroupsFromCache(cached, tabs);
+  }
+  if (smartInflight === signature) return null; // already fetching this exact set
+
+  // Dedupe by URL — send only unique URLs to the LLM. After clustering,
+  // expand each representative back to ALL tabs sharing its URL so that
+  // duplicate-tab detection works inside the resulting card.
+  const urlToAll = new Map();
+  for (const t of tabs) {
+    if (!t.url) continue;
+    if (!urlToAll.has(t.url)) urlToAll.set(t.url, []);
+    urlToAll.get(t.url).push(t);
+  }
+  const uniqueReps = [...urlToAll.values()].map(arr => arr[0]);
+
+  const slice = uniqueReps.slice(0, SMART_MAX_TABS);
+  const tabsForLLM = slice.map((t, idx) => {
+    let host = '';
+    try { host = new URL(t.url).hostname; } catch {}
+    return {
+      id: idx,
+      host,
+      title: (t.title || '').slice(0, 120), // generous — quality matters
+      __ref: t,
+    };
+  });
+
+  smartInflight = signature;
+  let rawResult;
+  try {
+    rawResult = await smartGroupCallGroq(tabsForLLM);
+  } catch (err) {
+    console.warn('[swoosh] smart grouping failed:', err.message);
+    smartInflight = null;
+    return null;
+  }
+  smartInflight = null;
+
+  // The LLM returned synthetic ids (0..N). Build proxy objects whose `id`
+  // matches the synthetic ids, then unwrap back to the real chrome tabs.
+  const proxies = tabsForLLM.map(t => ({ ...t.__ref, id: t.id, __ref: t.__ref }));
+  const mappedProxies = validateAndMapGroups(rawResult, proxies);
+
+  // Expand each representative back to all tabs sharing its URL so that
+  // duplicates land in the same card and the within-card dedup detection works.
+  const mapped = mappedProxies.map(g => ({
+    name: g.name,
+    tabs: g.tabs.flatMap(t => urlToAll.get(t.__ref.url) || [t.__ref]),
+  }));
+
+  // Final safety net — if any URLs are still unaccounted for (rare), drop them
+  // into a thoughtfully-named bucket rather than calling it "Other".
+  const claimedUrls = new Set();
+  for (const g of mapped) for (const t of g.tabs) claimedUrls.add(t.url);
+  const stillOrphan = tabs.filter(t => t.url && !claimedUrls.has(t.url));
+  if (stillOrphan.length > 0) {
+    console.warn(`[swoosh] safety net: ${stillOrphan.length}/${tabs.length} tabs unclaimed by LLM, salvaging by domain`);
+    const salvaged = salvageOrphansByDomain(stillOrphan);
+    mapped.push(...salvaged);
+  }
+
+  // Persist cache as { name, urls } so it survives reloads even if tab IDs change
+  smartGroupCache[signature] = {
+    groups: mapped.map(g => ({ name: g.name, urls: g.tabs.map(t => t.url) })),
+    generatedAt: Date.now(),
+  };
+  // Cap cache to ~30 entries
+  const keys = Object.keys(smartGroupCache);
+  if (keys.length > 30) {
+    const sorted = keys.sort((a, b) => (smartGroupCache[a].generatedAt || 0) - (smartGroupCache[b].generatedAt || 0));
+    for (const k of sorted.slice(0, keys.length - 30)) delete smartGroupCache[k];
+  }
+  await chrome.storage.local.set({ [SMART_GROUP_CACHE_KEY]: smartGroupCache });
+
+  return mapped;
+}
+
+function rebuildGroupsFromCache(cached, tabs) {
+  // cached.groups: [{name, urls}], tabs: live tab list
+  // Map url → ALL tabs with that url, so dupes follow their group.
+  const urlToAll = new Map();
+  for (const t of tabs) {
+    if (!t.url) continue;
+    if (!urlToAll.has(t.url)) urlToAll.set(t.url, []);
+    urlToAll.get(t.url).push(t);
+  }
+  const claimedUrls = new Set();
+  const out = [];
+  for (const g of cached.groups) {
+    const groupTabs = [];
+    for (const url of g.urls) {
+      if (claimedUrls.has(url)) continue;
+      const matches = urlToAll.get(url);
+      if (matches && matches.length > 0) {
+        claimedUrls.add(url);
+        groupTabs.push(...matches);
+      }
+    }
+    if (groupTabs.length > 0) out.push({ name: g.name, tabs: groupTabs });
+  }
+  const orphans = tabs.filter(t => t.url && !claimedUrls.has(t.url));
+  if (orphans.length > 0) {
+    out.push(...salvageOrphansByDomain(orphans));
+  }
+  return out;
+}
+
+// Local-only fallback when the LLM drops tabs. Group by host: any host with
+// 2+ tabs becomes its own friendly-named group; singletons collapse into a
+// single "Unclustered" bucket (which the user can see is genuinely a remainder).
+function salvageOrphansByDomain(orphans) {
+  const byHost = new Map();
+  const singletons = [];
+  const hostOf = (t) => { try { return new URL(t.url).hostname; } catch { return ''; } };
+
+  // First pass: bucket by host
+  const tmp = new Map();
+  for (const t of orphans) {
+    const h = hostOf(t);
+    if (!h) { singletons.push(t); continue; }
+    if (!tmp.has(h)) tmp.set(h, []);
+    tmp.get(h).push(t);
+  }
+  // Promote 2+ buckets to real groups; drop 1-tab hosts into singletons
+  for (const [host, ts] of tmp) {
+    if (ts.length >= 2) byHost.set(host, ts);
+    else singletons.push(...ts);
+  }
+
+  const out = [];
+  for (const [host, ts] of byHost) {
+    out.push({ name: friendlyDomain(host) || host, tabs: ts });
+  }
+  if (singletons.length > 0) {
+    out.push({ name: 'Unclustered', tabs: singletons });
+  }
+  return out;
+}
+
+
 const ICONS = {
   // Tab/browser icon — used in the "N tabs open" badge
   tabs: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 0 0 2.25 2.25h13.5A2.25 2.25 0 0 0 21 18V8.25m-18 0V6a2.25 2.25 0 0 1 2.25-2.25h13.5A2.25 2.25 0 0 1 21 6v2.25m-18 0h18" /></svg>`,
@@ -890,16 +1308,13 @@ function checkSwooshDupes() {
     t.url === 'chrome://newtab/' || t.url === 'edge://newtab/' || t.url === 'about:newtab'
   );
   if (swooshTabs.length > 1) {
-    showActionToast(`${swooshTabs.length} New Tab pages open`, 'Close extras', async () => {
+    (async () => {
       const all = await chrome.tabs.query({});
       const newTabUrls = ['chrome://newtab/', 'edge://newtab/', 'about:newtab'];
       const current = await chrome.tabs.getCurrent();
       const toClose = all.filter(t => t.id !== current?.id && newTabUrls.includes(t.url)).map(t => t.id);
       if (toClose.length > 0) await chrome.tabs.remove(toClose);
-      await fetchOpenTabs();
-      playCloseSound();
-      showToast('Closed extra new tab pages');
-    });
+    })();
   }
 }
 
@@ -920,16 +1335,17 @@ function checkSwooshDupes() {
  */
 function buildOverflowChips(hiddenTabs, urlCounts = {}) {
   const hiddenChips = hiddenTabs.map(tab => {
-    const label   = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '');
+    const baseLabel = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), '');
+    const label   = aiTitleFor(tab.url, baseLabel);
     const count   = urlCounts[tab.url] || 1;
     const dupeTag = count > 1 ? ` <span class="chip-dupe-badge">(${count}x)</span>` : '';
     const chipClass = (count > 1 ? ' chip-has-dupes' : '') + (tab.pinned ? ' chip-pinned' : '');
     const safeUrl = (tab.url || '').replace(/"/g, '&quot;');
     const safeTitle = label.replace(/"/g, '&quot;');
-    const faviconUrl = tab.favIconUrl || '';
+    const fUrl = faviconUrl(tab.url, 16);
     const pinTag = tab.pinned ? `<span class="chip-pin-icon">${ICONS.pin}</span>` : '';
     return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" data-tooltip="${safeTitle}">
-      ${pinTag}${faviconUrl ? `<img class="chip-favicon favicon-img" src="${faviconUrl}" alt="">` : ''}
+      ${pinTag}${fUrl ? `<img class="chip-favicon favicon-img" src="${fUrl}" alt="">` : ''}
       <span class="chip-text">${escHtml(label)}</span>${dupeTag}
       <div class="chip-actions">
         <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tooltip="Save for later">
@@ -962,7 +1378,8 @@ function renderDomainCard(group) {
   const tabs      = group.tabs || [];
   const tabCount  = tabs.length;
   const isLanding = group.domain === '__landing-pages__';
-  const stableId  = 'domain-' + group.domain.replace(/[^a-z0-9]/g, '-');
+  const isSmart   = !!group.isSmart;
+  const stableId  = 'domain-' + (group.domain || group.displayName || 'group').replace(/[^a-z0-9]/g, '-');
 
   // Detect duplicates within this domain group (exact URL match)
   const urlCounts = {};
@@ -973,11 +1390,35 @@ function renderDomainCard(group) {
   const hasDupes = dupeUrls.length > 0;
   const totalExtras = dupeUrls.reduce((s, [, c]) => s + c - 1, 0);
 
-  // Tab count badge
-  const tabBadge = `<span class="open-tabs-badge">
-    ${ICONS.tabs}
-    ${tabCount} tab${tabCount !== 1 ? 's' : ''} open
-  </span>`;
+  // Site favicon + name
+  let cardName;
+  if (isSmart) cardName = group.displayName || group.domain;
+  else if (isLanding) cardName = 'Homepages';
+  else cardName = friendlyDomain(group.domain);
+
+  // For smart groups, prefer the favicon of the most-represented domain.
+  let firstFavicon = '';
+  if (isSmart) {
+    const hostCount = {};
+    for (const t of tabs) {
+      let h = '';
+      try { h = new URL(t.url).hostname; } catch { continue; }
+      hostCount[h] = (hostCount[h] || 0) + 1;
+    }
+    const topHost = Object.entries(hostCount).sort((a, b) => b[1] - a[1])[0]?.[0];
+    const topTab = tabs.find(t => { try { return new URL(t.url).hostname === topHost; } catch { return false; } });
+    firstFavicon = topTab ? faviconUrl(topTab.url, 16) : faviconUrl(tabs[0]?.url, 16);
+  } else {
+    firstFavicon = faviconUrl(tabs[0]?.url, 16);
+  }
+  const faviconEl = firstFavicon
+    ? `<img class="card-favicon favicon-img" src="${firstFavicon}" alt="" aria-hidden="true">`
+    : `<span class="card-favicon card-favicon-fallback" aria-hidden="true">${(cardName || '?')[0].toUpperCase()}</span>`;
+
+  // Minimal tab count — only shown for 2+
+  const countEl = tabCount > 1
+    ? `<span class="card-tab-count">${tabCount}</span>`
+    : '';
 
   // Deduplicate for display: show each URL once with (Nx) badge if duplicated
   const seen = new Set();
@@ -991,7 +1432,8 @@ function renderDomainCard(group) {
   const visibleTabs = uniqueTabs.slice(0, 8);
   const extraCount  = uniqueTabs.length - visibleTabs.length;
   const pageChips = visibleTabs.map(tab => {
-    let label = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), group.domain);
+    const baseLabel = cleanTitle(smartTitle(stripTitleNoise(tab.title || ''), tab.url), group.domain);
+    let label = aiTitleFor(tab.url, baseLabel);
     // For localhost tabs, prepend the port number so you can tell projects apart
     try {
       const parsed = new URL(tab.url);
@@ -1006,10 +1448,10 @@ function renderDomainCard(group) {
     const chipClass = (count > 1 ? ' chip-has-dupes' : '') + (tab.pinned ? ' chip-pinned' : '');
     const safeUrl = (tab.url || '').replace(/"/g, '&quot;');
     const safeTitle = label.replace(/"/g, '&quot;');
-    const faviconUrl = tab.favIconUrl || '';
+    const fUrl = faviconUrl(tab.url, 16);
     const pinTag = tab.pinned ? `<span class="chip-pin-icon">${ICONS.pin}</span>` : '';
     return `<div class="page-chip clickable${chipClass}" data-action="focus-tab" data-tab-url="${safeUrl}" data-tooltip="${safeTitle}">
-      ${pinTag}${faviconUrl ? `<img class="chip-favicon favicon-img" src="${faviconUrl}" alt="">` : ''}
+      ${pinTag}${fUrl ? `<img class="chip-favicon favicon-img" src="${fUrl}" alt="">` : ''}
       <span class="chip-text">${escHtml(label)}</span>${dupeTag}
       <div class="chip-actions">
         <button class="chip-action chip-save" data-action="defer-single-tab" data-tab-url="${safeUrl}" data-tab-title="${safeTitle}" data-tooltip="Save for later">
@@ -1031,26 +1473,21 @@ function renderDomainCard(group) {
       </button>`;
   }
 
-  const cardName = isLanding ? 'Homepages' : friendlyDomain(group.domain);
-  const category = getDomainCategory(group.domain);
   const cardClass = hasDupes ? 'has-amber-bar' : 'has-neutral-bar';
-  const catTag = (category !== 'default' && !isLanding)
-    ? `<span class="cat-tag cat-tag-${category}">${category}</span>`
-    : '';
 
   return `
-    <div class="mission-card domain-card ${cardClass}" data-domain-id="${stableId}">
+    <div class="mission-card domain-card is-expanded ${cardClass}" data-domain-id="${stableId}">
       <div class="mission-content">
         <div class="mission-top">
-          ${catTag}
+          ${faviconEl}
           <span class="mission-name">${cardName}</span>
-          ${tabBadge}
+          ${countEl}
           <div class="card-top-actions">
             ${dupeIcon}
             <button class="card-close-btn" data-action="close-domain-tabs" data-domain-id="${stableId}" data-tooltip="Close all ${tabCount} tab${tabCount !== 1 ? 's' : ''}">
               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
             </button>
-            <button class="card-expand-btn" data-tooltip="Show tabs">
+            <button class="card-expand-btn" data-tooltip="Toggle tabs">
               <svg class="expand-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
             </button>
           </div>
@@ -1170,7 +1607,7 @@ async function renderDeferredColumn() {
 function renderDeferredItem(item) {
   let domain = '';
   try { domain = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
-  const faviconUrl = item.favicon_url || '';
+  const faviconSrc = item.favicon_url || faviconUrl(item.url, 16);
   const ago = timeAgo(item.deferred_at);
 
   return `
@@ -1178,7 +1615,7 @@ function renderDeferredItem(item) {
       <input type="checkbox" class="deferred-checkbox" data-action="check-deferred" data-deferred-id="${item.id}">
       <div class="deferred-info">
         <a href="${item.url}" target="_blank" rel="noopener" class="deferred-title" data-tooltip="${(item.title || '').replace(/"/g, '&quot;')}">
-          ${faviconUrl ? `<img src="${faviconUrl}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" class="favicon-img">` : ''}${escHtml(item.title || item.url)}
+          ${faviconSrc ? `<img src="${faviconSrc}" alt="" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px" class="favicon-img">` : ''}${escHtml(item.title || item.url)}
         </a>
         <div class="deferred-meta">
           <span>${domain}</span>
@@ -1316,6 +1753,21 @@ async function renderStaticDashboard() {
     groupMap['__landing-pages__'] = { domain: '__landing-pages__', tabs: landingTabs };
   }
 
+  // ── Extract pinned tabs into their own strip ───────────────────────────
+  const pinnedTabs = [];
+  for (const key of Object.keys(groupMap)) {
+    const group = groupMap[key];
+    const unpinned = [];
+    for (const tab of group.tabs) {
+      if (tab.pinned) {
+        pinnedTabs.push(tab);
+      } else {
+        unpinned.push(tab);
+      }
+    }
+    group.tabs = unpinned;
+  }
+
   // ── Extract stale tabs into their own group ────────────────────────────
   const now = Date.now();
   const staleTabs = [];
@@ -1357,13 +1809,66 @@ async function renderStaticDashboard() {
   // ── Step 4: Render domain cards ───────────────────────────────────────────
   const openTabsSection    = document.getElementById('openTabsSection');
   const openTabsMissionsEl = document.getElementById('openTabsMissions');
+  const pinnedStripEl      = document.getElementById('pinnedStrip');
 
-  const hasContent = domainGroups.length > 0 || staleTabs.length > 0;
+  // ── Pinned tabs strip ──────────────────────────────────────────────────
+  if (pinnedStripEl) {
+    if (pinnedTabs.length > 0) {
+      const pinChips = pinnedTabs.map(tab => {
+        const rawTitle = tab.title || '';
+        const baseLabel = cleanTitle(smartTitle(stripTitleNoise(rawTitle), tab.url || ''), '');
+        const label = aiTitleFor(tab.url, baseLabel);
+        const safeUrl = (tab.url || '').replace(/"/g, '&quot;');
+        const safeTitle = label.replace(/"/g, '&quot;');
+        const letter = (baseLabel || rawTitle || '?')[0].toUpperCase();
+        const fUrl = faviconUrl(tab.url, 32);
+        return `<button class="pinned-chip" data-action="focus-tab" data-tab-url="${safeUrl}" data-tooltip="${safeTitle}">
+          ${fUrl ? `<img class="pinned-chip-favicon favicon-img" src="${fUrl}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-flex'">` : ''}
+          <span class="pinned-chip-fallback"${fUrl ? ' style="display:none"' : ''}>${letter}</span>
+        </button>`;
+      }).join('');
+      pinnedStripEl.innerHTML = `<div class="pinned-strip-chips">${pinChips}</div>`;
+      pinnedStripEl.style.display = 'flex';
+    } else {
+      pinnedStripEl.innerHTML = '';
+      pinnedStripEl.style.display = 'none';
+    }
+  }
+
+  // ── Smart grouping (Groq-powered, replaces domain groups when enabled) ─────
+  // Gather all non-pinned, non-stale, non-landing tabs for clustering.
+  if (groupingMode === 'smart' && aiApiKey) {
+    const clusterable = [];
+    for (const g of domainGroups) {
+      if (g.domain === '__landing-pages__') continue;
+      for (const t of g.tabs) clusterable.push(t);
+    }
+    const sig = tabSetSignature(clusterable);
+    const cached = smartGroupCache[sig];
+    if (cached) {
+      const smart = rebuildGroupsFromCache(cached, clusterable);
+      const landing = domainGroups.find(g => g.domain === '__landing-pages__');
+      // Replace domainGroups so action handlers (close, dedupe, etc.) find them
+      // by the same IDs used to render the cards.
+      domainGroups = smart.map(g => ({ domain: g.name, displayName: g.name, tabs: g.tabs, isSmart: true }));
+      if (landing) domainGroups.unshift(landing);
+    } else {
+      // Render domain groups now, refresh once Groq returns.
+      smartGroupTabs(clusterable).then(result => {
+        if (result && result.length > 0) {
+          lastTabSnapshot = ''; // force re-render so smart groups take effect
+          renderDashboard();
+        }
+      });
+    }
+  }
+  const groupsToRender = domainGroups;
+
+  const hasContent = groupsToRender.length > 0 || staleTabs.length > 0 || pinnedTabs.length > 0;
   if (openTabsSection) {
-    if (domainGroups.length > 0) {
-      openTabsMissionsEl.innerHTML = domainGroups
-        .map((g, idx) => renderDomainCard(g, idx))
-        .join('');
+    if (groupsToRender.length > 0) {
+      const cards = groupsToRender.map((g, idx) => renderDomainCard(g, idx));
+      openTabsMissionsEl.innerHTML = distributeToColumns(cards, 3);
     } else if (!hasContent) {
       openTabsMissionsEl.innerHTML = `
         <div class="missions-empty-state">
@@ -1387,9 +1892,9 @@ async function renderStaticDashboard() {
       if (btn) btn.textContent = `Close all`;
       if (list) list.innerHTML = staleTabs.map(t => {
         const encoded = encodeURIComponent(t.url);
-        const faviconUrl = t.favIconUrl || (t.url ? `https://www.google.com/s2/favicons?domain=${new URL(t.url).hostname}&sz=32` : '');
-        const favicon = faviconUrl
-          ? `<img src="${faviconUrl}" width="14" height="14" style="border-radius:2px;" class="favicon-img">`
+        const fUrl = faviconUrl(t.url, 16);
+        const favicon = fUrl
+          ? `<img src="${fUrl}" width="14" height="14" style="border-radius:2px;" class="favicon-img">`
           : '';
         return `<span class="stale-tab-chip" data-action="focus-tab" data-tab-url="${t.url}"><span class="stale-tab-keep" data-action="keep-stale-tab" data-stale-url="${encoded}" data-tooltip="Keep open">↗</span>${favicon}<span class="stale-tab-title">${escHtml(t.title || 'Untitled')}</span><span class="stale-tab-x" data-action="close-stale-tab" data-stale-url="${encoded}" data-tooltip="Close tab">&times;</span></span>`;
       }).join('');
@@ -1406,8 +1911,24 @@ async function renderStaticDashboard() {
   // ── Step 9: Render the "Saved for Later" checklist column ────────────────
   await renderDeferredColumn();
 
-  // ── Step 10: Render usage stats section ─────────────────────────────────
-  renderStatsSection();
+  // ── Step 10: Render daily digest section ────────────────────────────────
+  renderDigestSection();
+
+  // ── Step 11: Kick off AI title rewrites for tabs ─────────────────────────
+  // Only when smart grouping is OFF — when grouping is on, the group name
+  // gives enough context that the existing regex cleanup is sufficient.
+  if (aiApiKey && groupingMode !== 'smart') {
+    const tabItems = [];
+    for (const group of domainGroups) {
+      for (const tab of group.tabs) {
+        if (tab.url && tab.title) tabItems.push({ url: tab.url, title: tab.title });
+      }
+    }
+    for (const tab of pinnedTabs) {
+      if (tab.url && tab.title) tabItems.push({ url: tab.url, title: tab.title });
+    }
+    enqueueAiRewrites(tabItems);
+  }
 
   // ── Check for duplicate Swoosh tabs — delay until after page feels settled ──
   setTimeout(() => checkSwooshDupes(), 800);
@@ -1415,105 +1936,112 @@ async function renderStaticDashboard() {
 
 
 /* ----------------------------------------------------------------
-   USAGE STATS — fetches session data from the server and renders
-   summary tiles, domain breakdown, and 7-day trend chart.
+   DAILY DEV DIGEST — reads stored feed items and renders cards.
    ---------------------------------------------------------------- */
 
-function formatDuration(totalSeconds) {
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m`;
-  return '<1m';
-}
+const DIGEST_SITE_FALLBACK = {
+  "Simon Willison":  "https://simonwillison.net/",
+  "Claude Blog":     "https://claude.com/blog",
+  "Latent Space":    "https://www.latent.space/s/ainews",
+  "Hugging Face":    "https://huggingface.co/blog",
+  "Google AI":       "https://blog.google/technology/ai/",
+  "Ars Technica AI": "https://arstechnica.com/ai/",
+  "Hacker News":     "https://news.ycombinator.com/best?h=24",
+  "GitHub Trending": "https://github.com/trending",
+  "Verge AI":        "https://www.theverge.com/ai-artificial-intelligence",
+  "TechCrunch AI":   "https://techcrunch.com/category/artificial-intelligence/",
+};
 
-async function renderStatsSection() {
-  const section = document.getElementById('statsSection');
-  const grid    = document.getElementById('statsGrid');
-  if (!section || !grid) return;
+async function renderDigestSection() {
+  const section   = document.getElementById('digestSection');
+  const list      = document.getElementById('digestList');
+  const updatedEl = document.getElementById('digestUpdated');
+  if (!section || !list) return;
 
   try {
-    const [today, { domains }, { trends }] = await Promise.all([
-      getStatsToday(),
-      getStatsDomains(),
-      getStatsTrends(),
+    const [data, readData, pinnedData] = await Promise.all([
+      chrome.storage.local.get('digest'),
+      chrome.storage.local.get('digest_read'),
+      chrome.storage.local.get('pinned_sources'),
     ]);
-
-    if (today.sessionCount === 0 && trends.length === 0) {
-      section.style.display = 'none';
+    const { items = [], generatedAt = null } = data.digest || {};
+    const readSet = new Set(readData.digest_read || []);
+    const pinnedSet = new Set(pinnedData.pinned_sources || []);
+    if (updatedEl) {
+      updatedEl.textContent = generatedAt ? `Updated ${_digestAgo(generatedAt)}` : 'Not yet refreshed';
+    }
+    if (items.length === 0) {
+      list.innerHTML = '<div class="digest-empty">No digest yet — click ↻ to refresh</div>';
       return;
     }
 
-    // Update footer "Active today" stat
-    const statActiveTime = document.getElementById('statActiveTime');
-    if (statActiveTime) statActiveTime.textContent = formatDuration(today.totalTime);
-
-    // ── Summary tiles ──────────────────────────────────────────────────────
-    const tilesHtml = `
-      <div class="stats-tiles">
-        <div class="stat-tile">
-          <div class="stat-tile-num">${formatDuration(today.totalTime)}</div>
-          <div class="stat-tile-label">Active</div>
-        </div>
-        <div class="stat-tile">
-          <div class="stat-tile-num">${today.domainCount}</div>
-          <div class="stat-tile-label">Domains</div>
-        </div>
-        <div class="stat-tile">
-          <div class="stat-tile-num">${today.sessionCount}</div>
-          <div class="stat-tile-label">Sessions</div>
-        </div>
-      </div>`;
-
-    // ── Top domains bar chart ──────────────────────────────────────────────
-    const topDomains = domains.slice(0, 5);
-    const maxTime = topDomains.length > 0 ? topDomains[0].totalTime : 1;
-    const domainBarsHtml = topDomains.length > 0 ? `
-      <div class="stats-panel">
-        ${topDomains.map(d => {
-          const pct = Math.max(5, Math.round((d.totalTime / maxTime) * 100));
-          return `<div class="domain-bar-row">
-            <span class="domain-bar-label">${d.domain}</span>
-            <div class="domain-bar-track">
-              <div class="domain-bar-fill" style="width:${pct}%"></div>
-            </div>
-            <span class="domain-bar-time">${formatDuration(d.totalTime)}</span>
-          </div>`;
-        }).join('')}
-      </div>` : '';
-
-    // ── 7-day trend chart ──────────────────────────────────────────────────
-    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const last7 = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000);
-      const key = d.toISOString().slice(0, 10);
-      const entry = trends.find(t => t.date === key);
-      last7.push({
-        label: dayNames[d.getDay()],
-        time: entry ? entry.totalTime : 0,
-        isToday: i === 0,
-      });
+    const groups = {};
+    for (const item of items) {
+      if (!groups[item.source]) groups[item.source] = [];
+      groups[item.source].push(item);
     }
-    const trendMax = Math.max(...last7.map(d => d.time), 1);
-    const trendHtml = `
-      <div class="stats-panel">
-        <div class="trend-chart">
-          ${last7.map(d => {
-            const pct = Math.max(2, Math.round((d.time / trendMax) * 100));
-            return `<div class="trend-col${d.isToday ? ' trend-today' : ''}">
-              <div class="trend-bar" style="height:${pct}%" data-tooltip="${formatDuration(d.time)}" data-tooltip-pos="up"></div>
-              <div class="trend-label">${d.label}</div>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>`;
 
-    grid.innerHTML = tilesHtml + domainBarsHtml + trendHtml;
-    section.style.display = 'block';
+    const sourceCards = Object.entries(groups)
+      .sort(([a], [b]) => {
+        const pa = pinnedSet.has(a) ? 1 : 0;
+        const pb = pinnedSet.has(b) ? 1 : 0;
+        return pb - pa;
+      })
+      .map(([source, articles]) => {
+      const siteUrl = DIGEST_SITE_FALLBACK[source] || '';
+      const isPinned = pinnedSet.has(source);
+      const rows = articles.map(a => {
+        const isRead = readSet.has(a.link);
+        const displayTitle = aiTitleFor(a.link, a.title);
+        return `
+        <div class="digest-article${isRead ? ' is-read' : ''}" data-href="${escHtml(a.link)}">
+          <a class="digest-article-link" href="${escHtml(a.link)}" target="_blank" rel="noopener noreferrer">
+            <span class="digest-article-title">${escHtml(displayTitle)}</span>
+          </a>
+          <span class="digest-age">${_digestAgo(a.publishedAt)}</span>
+          <button class="digest-read-btn" data-link="${escHtml(a.link)}" aria-label="Mark as read" data-tooltip="${isRead ? 'Read' : 'Mark as read'}">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+          </button>
+        </div>`;
+      }).join('');
+
+      return `
+        <div class="digest-source-card is-expanded" data-source="${escHtml(source)}">
+          <div class="digest-source-top">
+            ${isPinned ? `<span class="digest-pin-indicator" aria-label="Pinned source">${ICONS.pin}</span>` : ''}
+            <a class="digest-badge" data-source="${escHtml(source)}" href="${escHtml(siteUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(source)}</a>
+            <span class="digest-count">${articles.length}</span>
+            <div class="digest-source-actions">
+              <button class="digest-expand-btn" aria-label="Toggle articles">
+                <svg class="expand-chevron" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+              </button>
+            </div>
+          </div>
+          <div class="digest-articles">${rows}</div>
+        </div>`;
+    });
+    list.innerHTML = distributeToColumns(sourceCards, 3);
+
+    if (aiApiKey) {
+      const articleItems = items
+        .filter(it => it.link && it.title)
+        .map(it => ({ url: it.link, title: it.title }));
+      enqueueAiRewrites(articleItems);
+    }
   } catch {
     section.style.display = 'none';
   }
+}
+
+function _digestAgo(ts) {
+  const diff = Date.now() - ts;
+  const d = Math.floor(diff / 86400000);
+  const h = Math.floor(diff / 3.6e6);
+  const m = Math.floor(diff / 60000);
+  if (d >= 1) return `${d}d ago`;
+  if (h >= 1) return `${h}h ago`;
+  if (m >= 1) return `${m}m ago`;
+  return 'just now';
 }
 
 
@@ -1646,11 +2174,11 @@ document.addEventListener('click', async (e) => {
     if (!tabUrl) return;
 
     const matchingTab = openTabs.find(t => t.url === tabUrl);
-    const faviconUrl = matchingTab ? matchingTab.favIconUrl : null;
+    const faviconSrc = faviconUrl(tabUrl, 16);
 
     // Save to the deferred list in storage
     try {
-      await insertDeferred({ url: tabUrl, title: tabTitle, favicon_url: faviconUrl });
+      await insertDeferred({ url: tabUrl, title: tabTitle, favicon_url: faviconSrc });
     } catch (err) {
       console.error('[swoosh] Failed to defer tab:', err);
       showToast('Failed to save tab');
@@ -1933,14 +2461,6 @@ document.addEventListener('click', async (e) => {
         b.style.opacity = '0';
         setTimeout(() => b.remove(), 200);
       });
-      // Remove the amber "N duplicates" badge from the card header
-      card.querySelectorAll('.open-tabs-badge').forEach(badge => {
-        if (badge.textContent.includes('duplicate')) {
-          badge.style.transition = 'opacity 0.2s';
-          badge.style.opacity = '0';
-          setTimeout(() => badge.remove(), 200);
-        }
-      });
       // Remove amber highlight from the card border
       card.classList.remove('has-amber-bar');
       card.classList.remove('has-amber-bar');
@@ -2147,8 +2667,9 @@ function usdRender(tabs, query) {
            + `</div>`;
     }
     const t = item.tab;
-    const favicon = t.favIconUrl
-      ? `<img src="${usdEscapeHtml(t.favIconUrl)}" alt="">`
+    const fUrl = faviconUrl(t.url, 16);
+    const favicon = fUrl
+      ? `<img src="${usdEscapeHtml(fUrl)}" alt="">`
       : USD_SEARCH_ICON_SVG;
     let hostPath = '';
     try {
@@ -2403,10 +2924,80 @@ settingsToggle?.addEventListener('click', (e) => {
 });
 
 document.addEventListener('click', (e) => {
-  if (settingsPopover?.classList.contains('is-open') && !e.target.closest('.settings-wrap')) {
+  if (settingsPopover?.classList.contains('is-open') && !e.target.closest('.settings-wrap, .settings-popover')) {
     settingsPopover.classList.remove('is-open');
     settingsToggle?.setAttribute('aria-expanded', 'false');
   }
+});
+
+// ── Groq API key settings ────────────────────────────────────────────────────
+(function initGroqKeyUI() {
+  const input  = document.getElementById('groqApiKeyInput');
+  const save   = document.getElementById('groqApiKeySave');
+  const status = document.getElementById('groqApiKeyStatus');
+  if (!input || !save) return;
+
+  function setStatus(msg, kind) {
+    if (!status) return;
+    status.textContent = msg;
+    status.classList.remove('is-success', 'is-error');
+    if (kind) status.classList.add(`is-${kind}`);
+  }
+
+  chrome.storage.local.get(AI_KEY_STORAGE).then(data => {
+    const stored = data[AI_KEY_STORAGE] || '';
+    if (stored) {
+      input.value = stored;
+      setStatus('Saved · AI rewrites active', 'success');
+    } else {
+      setStatus('Add a key to enable AI title cleanup', null);
+    }
+  });
+
+  save.addEventListener('click', async () => {
+    const val = input.value.trim();
+    if (!val) {
+      await chrome.storage.local.remove(AI_KEY_STORAGE);
+      aiApiKey = '';
+      await aiClearCache();
+      setStatus('Key cleared', null);
+      renderDashboard();
+      return;
+    }
+    if (!val.startsWith('gsk_')) {
+      setStatus('Groq keys start with gsk_', 'error');
+      return;
+    }
+    await chrome.storage.local.set({ [AI_KEY_STORAGE]: val });
+    aiApiKey = val;
+    setStatus('Saved · rewriting titles…', 'success');
+    renderDashboard();
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save.click(); }
+  });
+})();
+
+// ── Tab grouping mode toggle ─────────────────────────────────────────────────
+function reflectGroupingMode() {
+  document.querySelectorAll('#groupingOptions .settings-opt').forEach(b => {
+    b.classList.toggle('is-active', b.dataset.grouping === groupingMode);
+  });
+}
+document.getElementById('groupingOptions')?.addEventListener('click', async (e) => {
+  const btn = e.target.closest('.settings-opt');
+  if (!btn) return;
+  const next = btn.dataset.grouping === 'smart' ? 'smart' : 'domain';
+  if (next === groupingMode) return;
+  groupingMode = next;
+  // Clear poisoned/stale smart cache on every mode flip — cheap to rebuild
+  smartGroupCache = {};
+  await chrome.storage.local.remove(SMART_GROUP_CACHE_KEY);
+  await chrome.storage.local.set({ [GROUPING_MODE_KEY]: next });
+  reflectGroupingMode();
+  lastTabSnapshot = '';
+  renderDashboard();
 });
 
 document.getElementById('staleOptions')?.addEventListener('click', async (e) => {
@@ -2482,5 +3073,123 @@ document.getElementById('staleOptions')?.addEventListener('click', async (e) => 
   document.addEventListener('mousedown', hide);
 })();
 
+document.getElementById('digestList')?.addEventListener('click', async (e) => {
+  const readBtn = e.target.closest('.digest-read-btn');
+  if (readBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const article = readBtn.closest('.digest-article');
+    const link = readBtn.dataset.link;
+    if (article && link) {
+      const wasRead = article.classList.toggle('is-read');
+      readBtn.dataset.tooltip = wasRead ? 'Read' : 'Mark as read';
+      const rd = await chrome.storage.local.get('digest_read');
+      const arr = rd.digest_read || [];
+      if (wasRead && !arr.includes(link)) {
+        arr.push(link);
+        await chrome.storage.local.set({ digest_read: arr });
+      } else if (!wasRead) {
+        await chrome.storage.local.set({ digest_read: arr.filter(l => l !== link) });
+      }
+    }
+    return;
+  }
+  const articleLink = e.target.closest('.digest-article-link');
+  if (articleLink) {
+    const article = articleLink.closest('.digest-article');
+    if (article) {
+      article.classList.add('is-read');
+      const href = articleLink.getAttribute('href');
+      if (href) {
+        const rd = await chrome.storage.local.get('digest_read');
+        const arr = rd.digest_read || [];
+        if (!arr.includes(href)) {
+          arr.push(href);
+          await chrome.storage.local.set({ digest_read: arr });
+        }
+      }
+    }
+    return;
+  }
+  const badge = e.target.closest('.digest-badge');
+  if (badge) return;
+  const card = e.target.closest('.digest-source-card');
+  if (card) card.classList.toggle('is-expanded');
+});
+
+async function _togglePinSource(source) {
+  const pinned = await chrome.storage.local.get('pinned_sources');
+  const arr = pinned.pinned_sources || [];
+  const idx = arr.indexOf(source);
+  if (idx >= 0) {
+    arr.splice(idx, 1);
+  } else {
+    arr.push(source);
+  }
+  await chrome.storage.local.set({ pinned_sources: arr });
+  renderDigestSection();
+}
+
+document.getElementById('digestList')?.addEventListener('contextmenu', async (e) => {
+  const card = e.target.closest('.digest-source-card');
+  if (!card) return;
+  const source = card.dataset.source;
+  if (!source) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+
+  const oldMenu = document.querySelector('.digest-context-menu');
+  if (oldMenu) oldMenu.remove();
+
+  const pinned = await chrome.storage.local.get('pinned_sources');
+  const pinnedSet = new Set(pinned.pinned_sources || []);
+  const isPinned = pinnedSet.has(source);
+
+  const menu = document.createElement('div');
+  menu.className = 'digest-context-menu';
+  menu.innerHTML = `
+    <button class="digest-context-item" data-action="toggle-pin" data-source="${escHtml(source)}">
+      <span class="digest-context-icon">${ICONS.pin}</span>
+      <span>${isPinned ? 'Unpin source' : 'Pin source'}</span>
+    </button>
+  `;
+  menu.style.left = `${e.offsetX + 8}px`;
+  menu.style.top  = `${e.offsetY}px`;
+
+  menu.querySelector('.digest-context-item')?.addEventListener('click', async (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    await _togglePinSource(source);
+    menu.remove();
+  });
+
+  card.appendChild(menu);
+});
+
+document.addEventListener('click', () => {
+  const menu = document.querySelector('.digest-context-menu');
+  if (menu) menu.remove();
+});
+
+document.getElementById('digestRefresh')?.addEventListener('click', async () => {
+  const btn = document.getElementById('digestRefresh');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    await chrome.runtime.sendMessage({ type: 'REFRESH_DIGEST' });
+    await renderDigestSection();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻'; }
+  }
+});
+
 startClock();
-renderDashboard();
+Promise.all([loadAiState(), loadGroupingState()]).then(() => {
+  reflectGroupingMode();
+  renderDashboard();
+});
+
+// Refresh digest on every new tab open; re-render when feeds return
+chrome.runtime.sendMessage({ type: 'REFRESH_DIGEST' })
+  .then(() => renderDigestSection())
+  .catch(() => {});

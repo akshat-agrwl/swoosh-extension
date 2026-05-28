@@ -4,7 +4,19 @@
   "version": "2.1.2",
   "minimum_chrome_version": "120",
   "description": "Your tabs, organized. Swoosh groups open tabs by site, surfaces stale ones, and clears clutter — with a satisfying swoosh.",
-  "permissions": ["tabs", "storage", "bookmarks", "search"],
+  "permissions": ["tabs", "storage", "bookmarks", "search", "alarms", "favicon"],
+  "host_permissions": [
+    "https://simonwillison.net/*",
+    "https://cdn.jsdelivr.net/*",
+    "https://www.latent.space/*",
+    "https://huggingface.co/*",
+    "https://blog.google/*",
+    "https://arstechnica.com/*",
+    "https://hnrss.org/*",
+    "https://mshibanami.github.io/*",
+    "https://www.theverge.com/*",
+    "https://techcrunch.com/*"
+  ],
   "chrome_url_overrides": { "newtab": "newtab.html" },
   "background": { "service_worker": "background.js" },
   "action": {
