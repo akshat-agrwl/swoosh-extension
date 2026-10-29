@@ -172,7 +172,7 @@ setInterval(flushSession, 60_000);
 const DIGEST_FEEDS = [
   { name: "Simon Willison",  url: "https://simonwillison.net/atom/everything/",                        weight: 10, type: "atom" },
   { name: "Claude Blog",     url: "https://cdn.jsdelivr.net/gh/Olshansk/rss-feeds@main/feeds/feed_claude.xml", weight: 10, type: "rss"  },
-  { name: "Latent Space",    url: "https://www.latent.space/feed",                                     weight: 10, type: "rss"  },
+  { name: "Latent Space",    url: "https://latent.space/feed",                                         weight: 10, type: "rss"  },
   { name: "Hugging Face",    url: "https://huggingface.co/blog/feed.xml",                              weight: 9,  type: "rss"  },
   { name: "Google AI",       url: "https://blog.google/technology/ai/rss/",                            weight: 9,  type: "rss"  },
   { name: "Ars Technica AI", url: "https://arstechnica.com/ai/feed/",                                 weight: 8,  type: "rss"  },

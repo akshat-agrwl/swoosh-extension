@@ -8,6 +8,7 @@
   "host_permissions": [
     "https://simonwillison.net/*",
     "https://cdn.jsdelivr.net/*",
+    "https://latent.space/*",
     "https://www.latent.space/*",
     "https://huggingface.co/*",
     "https://blog.google/*",

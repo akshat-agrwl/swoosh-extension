@@ -1942,7 +1942,7 @@ async function renderStaticDashboard() {
 const DIGEST_SITE_FALLBACK = {
   "Simon Willison":  "https://simonwillison.net/",
   "Claude Blog":     "https://claude.com/blog",
-  "Latent Space":    "https://www.latent.space/s/ainews",
+  "Latent Space":    "https://latent.space/news/",
   "Hugging Face":    "https://huggingface.co/blog",
   "Google AI":       "https://blog.google/technology/ai/",
   "Ars Technica AI": "https://arstechnica.com/ai/",
