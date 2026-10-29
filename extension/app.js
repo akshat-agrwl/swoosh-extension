@@ -820,9 +820,37 @@ async function aiCallGroq(batch) {
         { role: 'system', content: aiSystemPrompt() },
         { role: 'user', content: userMsg },
       ],
-      response_format: { type: 'json_object' },
+      // gpt-oss reasons before it writes. Default effort burns the whole
+      // budget, Groq then rejects the empty generation as invalid JSON.
+      reasoning_effort: 'low',
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'title_rewrites',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['items'],
+            properties: {
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['id', 'title'],
+                  properties: {
+                    id: { type: 'integer' },
+                    title: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       temperature: 0.2,
-      max_tokens: 800,
+      max_completion_tokens: 1200,
     }),
   });
   if (!res.ok) throw new Error(`Groq ${res.status}: ${await res.text()}`);
@@ -902,7 +930,7 @@ const SMART_GROUP_CACHE_KEY = 'smart_groups_cache';
 const GROUPING_MODE_KEY     = 'grouping_mode';
 const SMART_MIN_TABS        = 5;
 const SMART_MAX_TABS        = 50;
-const SMART_GROUP_MODEL     = 'llama-3.3-70b-versatile';
+const SMART_GROUP_MODEL     = 'openai/gpt-oss-120b';
 // Bump this whenever the prompt or post-processing changes — invalidates cached groupings.
 const SMART_PROMPT_VERSION  = 'v4';
 
@@ -973,9 +1001,35 @@ async function smartGroupCallGroq(tabsForLLM, { allowRetry = true } = {}) {
         { role: 'system', content: smartGroupSystemPrompt() },
         { role: 'user',   content: userMsg },
       ],
-      response_format: { type: 'json_object' },
+      reasoning_effort: 'low',
+      response_format: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'tab_groups',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['groups'],
+            properties: {
+              groups: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['name', 'ids'],
+                  properties: {
+                    name: { type: 'string' },
+                    ids: { type: 'array', items: { type: 'integer' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       temperature: 0.2,
-      max_tokens: 2000,
+      max_completion_tokens: 2000,
     }),
   });
 
